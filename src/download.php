@@ -183,7 +183,6 @@ foreach ($trove_data as $game) {
             [
                 'sink'     => $dl_path,
                 'progress' => function(
-                    $curl_resource,
                     $download_total,
                     $downloaded_bytes,
                     $upload_total,
@@ -192,10 +191,10 @@ foreach ($trove_data as $game) {
                     if ($download_total === 0) {
                         $pct = 0;
                     } else {
-                        $pct = number_format(($downloaded_bytes / $download_total) * 100, 2);
+                        $pct = ($downloaded_bytes / $download_total) * 100;
                     }
 
-                    print "\r    Progress: " . $pct . '%';
+                    echo "\r    Progress: " . number_format($pct, 1) . '%';
                 }
             ]
         );
@@ -378,7 +377,7 @@ function getGuzzleHttpClient($session_key)
     );
 
     $client = new GuzzleHttp\Client([
-        'base_uri' => 'https://www.humblebundle.com/api/v1/',
+        'base_uri' => 'https://www.humblebundle.com/',
         'cookies'  => $cookie_jar,
     ]);
 
@@ -399,7 +398,7 @@ function getTroveData($client)
 
         // Download each page of trove results
         $page_data = json_decode(
-            $client->request('GET', 'trove/chunk?property=start&direction=desc&index=' . $page_num)->getBody()
+            $client->request('GET', 'client/catalog?property=start&direction=desc&index=' . $page_num)->getBody()
         );
 
         // If results are empty, return data
@@ -427,7 +426,7 @@ function getTroveData($client)
 function getDownloadLink($client, $game, $file) {
 
     $result = json_decode(
-        $client->request('POST', 'user/download/sign',
+        $client->request('POST', 'api/v1/user/download/sign',
             [
                 'form_params' => [
                     'machine_name' => $game,

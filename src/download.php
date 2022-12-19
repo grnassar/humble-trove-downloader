@@ -10,7 +10,7 @@ $argv0 = $argv[0];
 
 // Parse command line options options
 $offset  = 0;
-$options = getopt("o:g:fdxswcmvlth", [], $offset);
+$options = getopt("o:g:frdxswcmvlth", [], $offset);
 
 // Remove command line options from argv, so that only the path/api key remain
 $argv = array_splice($argv, $offset);
@@ -32,6 +32,7 @@ define("TD_OVERWRITE", isset($options['w']));
 define("TD_UNATTENDED", TD_OVERWRITE || isset($options['s']));
 define("TD_CLEANUP", isset($options['c']));
 define("TD_VERIFY", isset($options['m']));
+define("TD_EXTRA", isset($options['r']));
 define("TD_EXPUNGE", isset($options['x']));
 define("TD_DELETE", TD_EXPUNGE || isset($options['d']));
 
@@ -65,7 +66,7 @@ if (isset($options['t'])) {
 }
 
 /* Create current local file list for deletes */
-if (TD_DELETE) {
+if (TD_DELETE || TD_EXTRA) {
     if (TD_VERBOSE) print ("Creating local file list...\n");
     $local_files = array();
     foreach (array("windows", "mac", "linux") as $os) {
@@ -115,7 +116,7 @@ foreach ($trove_data as $game) {
         }
 
         // Get this file off our delete list, if it's on it
-        if (TD_DELETE && ($idx = array_search($os_path, $local_files)) !== FALSE) {
+        if ((TD_DELETE || TD_EXTRA) && ($idx = array_search($os_path, $local_files)) !== FALSE) {
             unset($local_files[$idx]);
         }
 
@@ -209,7 +210,7 @@ foreach ($trove_data as $game) {
         } else {
             print "Mismatched md5sum ($new_md5 vs $md5) at $dl_path \n";
             // TODO: do we really need this option? Whether to keep the *file* makes more sense... or maybe not?
-            $keep_md5 = readline("Keep file MD5? (Y/N): ");
+            $keep_md5 = readline("Keep file's MD5? (Y/N): ");
             if (strtolower($keep_md5) === "y") {
                 file_put_contents($cache_path, $new_md5);
                 $file_results[$file] = "dl-forcedmd5";
@@ -229,18 +230,26 @@ foreach ($trove_data as $game) {
 
 print "Processed $count games\n";
 
+if (TD_EXTRA) {
+    print ("\nGames no longer in Trove:\n");
+    foreach ($local_files as $list_file) {
+        print ("    $list_file\n");
+    }
+}
+
 if (TD_DELETE) {
-    print ("Deleting games that are no longer in Trove...\n");
+    print ("\nDeleting games that are no longer in Trove...\n");
     foreach ($local_files as $del_file) {
         if (TD_VERBOSE) print ("    Deleting $del_file\n");
         unlink(TD_BASE_PATH . DIRECTORY_SEPARATOR . $del_file);
         // TODO: remove empty directories?
-        // TODO: implement delete logging
+        $file_results[$del_file] = "deleted";
         if (TD_EXPUNGE) {
             $del_md5 = TD_META_PATH . DIRECTORY_SEPARATOR . dirname($del_file) . DIRECTORY_SEPARATOR . "." . basename($del_file) . ".md5sum";
             if (file_exists($del_md5)) {
                 if (TD_VERBOSE) print ("    Deleting $del_md5\n");
                 unlink($del_md5);
+                $file_results[$del_md5] = "deleted";
             }
         }
     }
@@ -268,8 +277,10 @@ function printUsage($program_name, $exitval = 1) {
     print "      -o <os_list>    Comma-separated list of OS to exclude (windows,linux,mac)\n";
     print "      -g <game_list>  Comma-separated list of games to skip (produced in the output of this program in square brackets)\n";
     print "      -f              Flatten directory structure for received games (default: subdirectories are preserved)\n";
-    print "      -d              Delete files no longer in trove (keep hashes) ***\n";
-    print "      -x              Expunge files no longer in trove (delete hashes) ***\n";
+    print "\n";
+    print "      -r              After downloads, list files no longer in trove (make no changes)\n";
+    print "      -d              After downloads, delete files no longer in trove (keep hashes) ***\n";
+    print "      -x              After downloads, expunge files no longer in trove (delete hashes) ***\n";
     print "                          *** BE CAREFUL to use the correct -f setting for your repo with these commands!\n";
     print "\n";
     print "      -s              Unattended run, skip games w/mismatched hashes (default: prompt)\n";
@@ -289,11 +300,14 @@ function printUsage($program_name, $exitval = 1) {
 
 /**
  * MD5 hash cache cleanup and verification
+ * (TD_CLEANUP || TD_VERIFY) == true
+ * terminates script at end of function
  */
 function checkMD5($verify = false)
-// TODO: finish MD5 correction/generation
-// TODO: implement verification logging
 {
+    // TODO: decide what to do on verify fail (aka whether generating/fixing hashes is worth it)
+    //     compare that to verify files in main loop; maybe refactor this whole dang thing
+    $file_results=[];
     $dl_files = $md5_files = array();
     foreach (array("windows","mac","linux") as $os) {
         $dl_dir = getFilespec(TD_BASE_PATH . DIRECTORY_SEPARATOR . $os, 1);
@@ -316,6 +330,8 @@ function checkMD5($verify = false)
         if (!isset($md5_filemap[$md5_path])) {
             print ("    $dl_file hash not found in cache\n");
             // print ("Generating...\n");
+            if ($verify) {$file_results[$dl_file] = "verify_failed_hashnotfound";}
+                else {$file_results[$dl_file] = "check_failed_hashnotfound";}
         }
         else {
             if ($verify) {
@@ -324,6 +340,7 @@ function checkMD5($verify = false)
             if ($verify && $md5_filemap[$md5_path] != $dl_md5) {
                 print ("    incorrect hash for $dl_file\n");
                 // print ("Fixing...\n");
+                $file_results[$dl_file] = "verify_failed_badhash";
             }
             unset($md5_filemap[$md5_path]);
         }
@@ -332,13 +349,18 @@ function checkMD5($verify = false)
     foreach ($md5_filemap as $md5_file=>$hashmd5) {
         print ("  Deleting $md5_file\n");
         unlink(TD_META_PATH . DIRECTORY_SEPARATOR . $md5_file);
+        $file_results[$md5_file] = "hashdeleted";
+    }
+    if (isset($options['l'])) {
+        // write log file
+        file_put_contents(TD_BASE_PATH . DIRECTORY_SEPARATOR . 'trove-dl-' . date("Ymd-Hms") . '.log.json', json_encode($file_results));
     }
     exit(0);
 }
 
 
 /**
- * Returns a recursive list of specified files in the passed base+prefix directory, with dir prefix
+ * Returns a recursive list of pathnames for all specified files in the passed base+prefix directory
  * $filespec = 0 for all files, 1 for all except .md5sum, 2 for only .md5sum
  * TODO: a user-edited datastore with a circular symlink in it will almost certainly break this
  */
@@ -424,7 +446,6 @@ function getTroveData($client)
  * Returns download URL for given user, game and file (win, mac, linux, etc)
  */
 function getDownloadLink($client, $game, $file) {
-
     $result = json_decode(
         $client->request('POST', 'api/v1/user/download/sign',
             [
@@ -444,7 +465,9 @@ function getDownloadLink($client, $game, $file) {
  * Handle any notices/warnings/errors
  */
 function catchError($errNo, $errStr, $errFile, $errLine) {
-    print "$errStr in $errFile on line $errLine\n";
-
+    print "Error $errNo:$errStr in $errFile on line $errLine\n";
+    if (preg_match('/Attempt to read property \"signed_url\"/',$errStr)) {
+        print "\n    Make sure the session key you entered is valid and hasn't expired.\n";
+    }
     exit(1);
 }
